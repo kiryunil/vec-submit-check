@@ -90,7 +90,7 @@ def check_genes(r: Report, adata: ad.AnnData, panel: list[str]) -> None:
 
     if len(got) != len(panel):
         r.fail("gene panel", f"基因数 {len(got)}，应为 {len(panel)}")
-    if set(got) == set(panel):
+    if len(got) == len(panel) and set(got) == set(panel):
         first = next(i for i, (a, b) in enumerate(zip(got, panel)) if a != b)
         r.fail("gene panel", f"基因集合正确但顺序不同，首个差异在第 {first} 位："
                              f"{got[first]!r} ≠ {panel[first]!r} —— 按 panel 重排即可")
@@ -263,20 +263,21 @@ def check_obsm(r: Report, adata: ad.AnnData, board: dict) -> None:
         if key not in adata.obsm:
             r.fail(f"obsm[{key!r}]", "缺失 —— 有表达无坐标的文件在评分前直接拒")
             continue
-        arr = np.asarray(adata.obsm[key])
+        # 与评分器一致：先转换整个坐标数组，再仅使用前三列。
+        try:
+            with np.errstate(over="ignore", invalid="ignore"):
+                arr = np.asarray(adata.obsm[key], dtype=np.float32)
+        except (TypeError, ValueError, OverflowError):
+            r.fail(f"obsm[{key!r}]", "坐标无法转为 float32")
+            continue
         if arr.ndim != 2 or arr.shape[1] < 3:
             r.fail(f"obsm[{key!r}]", f"形状 {arr.shape}，需要 [n_obs, ≥3]")
         elif not np.isfinite(arr[:, :3]).all():
-            r.fail(f"obsm[{key!r}]", "前三列含 NaN/Inf")
+            r.fail(f"obsm[{key!r}]", "前三列转为 float32 后含 NaN/Inf —— 评分前会被拒")
         else:
-            # 只检查评分器使用的前三列；其余列即使溢出也不影响评分输入。
-            with np.errstate(over="ignore", invalid="ignore"):
-                finite32 = np.isfinite(arr[:, :3].astype(np.float32, copy=False)).all()
-            if not finite32:
-                r.fail(f"obsm[{key!r}]", "前三列转为 float32 后含 NaN/Inf —— 评分前会被拒")
-                continue
             extra = f"，第 3 列之后被忽略" if arr.shape[1] > 3 else ""
-            span = arr[:, :3].max(0) - arr[:, :3].min(0)
+            coords = arr[:, :3].astype(np.float64)
+            span = coords.max(0) - coords.min(0)
             r.ok(f"obsm[{key!r}]", f"{arr.shape}{extra}，包围盒 {np.round(span, 2).tolist()}")
 
     if not board["needs_coords"] and adata.obsm:
