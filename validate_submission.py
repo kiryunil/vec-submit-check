@@ -125,7 +125,14 @@ def check_X(r: Report, adata: ad.AnnData) -> bool:
     if n_bad:
         r.fail(".X finite", f"{n_bad} 个 NaN/Inf —— 缺失指标按 skill=0 计，不豁免")
     else:
-        r.ok(".X finite", "无 NaN/Inf")
+        # 评分器先转 float32 再检查；仅比较 float32 最大值会误拒可舍入回有限值的输入。
+        # 稀疏矩阵只转存储值，不转稠密，也不修改输入。
+        with np.errstate(over="ignore", invalid="ignore"):
+            n_bad = int((~np.isfinite(dense.astype(np.float32, copy=False))).sum())
+        if n_bad:
+            r.fail(".X finite", f"{n_bad} 个值转为 float32 后含 NaN/Inf —— 评分前会被拒")
+        else:
+            r.ok(".X finite", "无 NaN/Inf（含 float32 转换后）")
 
     n_neg = int((dense < 0).sum())
     if n_neg:
@@ -138,7 +145,7 @@ def check_X(r: Report, adata: ad.AnnData) -> bool:
 
     dt = X.dtype
     if dt != np.float32:
-        r.warn(".X dtype", f"{dt}，官网标的是 float32（不致拒收，但会放大文件）")
+        r.warn(".X dtype", f"{dt}，官网标的是 float32（数值转为 float32 后仍有限时不致拒收，但会放大文件）")
     else:
         r.ok(".X dtype", "float32")
 
@@ -262,6 +269,12 @@ def check_obsm(r: Report, adata: ad.AnnData, board: dict) -> None:
         elif not np.isfinite(arr[:, :3]).all():
             r.fail(f"obsm[{key!r}]", "前三列含 NaN/Inf")
         else:
+            # 只检查评分器使用的前三列；其余列即使溢出也不影响评分输入。
+            with np.errstate(over="ignore", invalid="ignore"):
+                finite32 = np.isfinite(arr[:, :3].astype(np.float32, copy=False)).all()
+            if not finite32:
+                r.fail(f"obsm[{key!r}]", "前三列转为 float32 后含 NaN/Inf —— 评分前会被拒")
+                continue
             extra = f"，第 3 列之后被忽略" if arr.shape[1] > 3 else ""
             span = arr[:, :3].max(0) - arr[:, :3].min(0)
             r.ok(f"obsm[{key!r}]", f"{arr.shape}{extra}，包围盒 {np.round(span, 2).tolist()}")
